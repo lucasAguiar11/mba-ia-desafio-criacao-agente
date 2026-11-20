@@ -1,0 +1,11 @@
+[project]
+name = "aurora"
+version = "0.1.0"
+description = "Assistente virtual do Residencial Aurora (Google ADK + FastAPI)"
+requires-python = ">=3.12"
+dependencies = [
+    "aiosqlite>=0.22.1",
+    "fastapi>=0.165.0",
+    "google-adk==2.15.0",
+    "uvicorn>=0.54.0",
+]
