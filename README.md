@@ -52,8 +52,8 @@ Os nomes seguem a API atual da série 2, conferida no código instalado: `from g
 
 ### Garantia 1: cobrança ou acesso só com confirmação
 
-- **`aurora/agent.py`, `reservar_area` (linhas 65–94):** se a área tem `taxa > 0` e a chamada ainda não traz `tool_context.tool_confirmation`, a tool chama `tool_context.request_confirmation(hint, payload={"area", "data", "taxa"})` e retorna **sem gravar**. Ela só grava quando o ADK a reexecuta com `tool_confirmation.confirmed == True`. Se for negada, retorna `nao_reservado`. Área com taxa 0 (quadra) grava direto, sem confirmação.
-- **`aurora/agent.py`, `autorizar_visitante` (linhas 116–141):** sempre pede confirmação, com `payload={"nome", "data"}`, e só chama `db.autorizar_visitante` depois de aprovada.
+- **`aurora/agent.py`, `reservar_area` (linhas 67–96):** se a área tem `taxa > 0` e a chamada ainda não traz `tool_context.tool_confirmation`, a tool chama `tool_context.request_confirmation(hint, payload={"area", "data", "taxa"})` e retorna **sem gravar**. Ela só grava quando o ADK a reexecuta com `tool_confirmation.confirmed == True`. Se for negada, retorna `nao_reservado`. Área com taxa 0 (quadra) grava direto, sem confirmação.
+- **`aurora/agent.py`, `autorizar_visitante` (linhas 118–143):** sempre pede confirmação, com `payload={"nome", "data"}`, e só chama `db.autorizar_visitante` depois de aprovada.
 - **`aurora/api.py`, `_pendentes` (linhas 59–75):** as pendências são as chamadas `adk_request_confirmation` gravadas na sessão que ainda não têm resposta. `acao` é o nome da tool original e `detalhes` é o `payload` validado pela tool.
 - **`aurora/api.py`, `responder_confirmacao` (linhas 108–114):** se o `id` não está em `_pendentes(sessao)`, a rota responde **409** e não chama o Runner. Isso cobre id inexistente, id de outra sessão e id já respondido, porque a resposta gravada tira o id da lista. Se o id for válido, a rota envia um `FunctionResponse(name="adk_request_confirmation", response={"confirmed": ...})` ao Runner, que retoma a tool no agente que pediu.
 
@@ -63,8 +63,8 @@ Os nomes seguem a API atual da série 2, conferida no código instalado: `from g
 
 - **`aurora/api.py`, `criar_sessao` (linhas 91–99):** o apartamento é validado contra `dados/apartamentos.json` e gravado **uma única vez** no state da sessão (`state={"apartamento": ...}`). Nenhuma rota ou tool altera esse valor depois.
 - **`aurora/agent.py`, `_apartamento` (linha 25):** todas as tools que leem ou gravam dados do morador obtêm o apartamento de `tool_context.state["apartamento"]`. **Nenhuma tool recebe apartamento como parâmetro**, então o modelo não tem como escolher outro.
-- **`aurora/db.py`, `cancelar_reserva` (linhas 117–124):** o `UPDATE` filtra por `codigo = ? AND apartamento = ?`. Um código de outro apartamento não cancela nada, e a resposta não diz se ele existe.
-- **`aurora/db.py`, `data_livre` (linhas 87–92) e `consultar_disponibilidade` em `agent.py`:** devolvem só `livre: true/false`, nunca o código ou o apartamento da reserva existente. `reservar_area` também responde apenas "já está reservado(a)".
+- **`aurora/db.py`, `cancelar_reserva` (linhas 115–122):** o `UPDATE` filtra por `codigo = ? AND apartamento = ?`. Um código de outro apartamento não cancela nada, e a resposta não diz se ele existe.
+- **`aurora/db.py`, `data_livre` (linhas 85–90) e `consultar_disponibilidade` em `agent.py`:** devolvem só `livre: true/false`, nunca o código ou o apartamento da reserva existente. `reservar_area` também responde apenas "já está reservado(a)".
 
 **Por que não depende do modelo:** mesmo que o morador diga ser do 302, as tools só enxergam o apartamento da sessão. Os dados de outro apartamento nunca são retornados a uma tool, então não chegam aos eventos nem à resposta.
 
@@ -77,11 +77,11 @@ Os nomes seguem a API atual da série 2, conferida no código instalado: `from g
 
 ### Garantia 4: o regulamento é consultado, não carregado
 
-- **`aurora/agent.py`, `CAPITULOS` e `ler_capitulo` (linhas 147–171):** o regulamento é dividido por capítulo. A tool grava **um** capítulo em `tool_context.state["temp:capitulo_regulamento"]` e devolve só `{"status": "Capítulo IV carregado..."}`.
-- **`aurora/agent.py`, `_instrucao_regulamento` e `regulamento_agent` (linhas 174–234):** o especialista recebe nas instruções o **índice** dos capítulos e, depois de `ler_capitulo`, o capítulo carregado (lido do state `temp:` por um `InstructionProvider`).
-- **`aurora/agent.py`, `root_agent` (linhas 236–249):** as instruções do principal não contêm o regulamento. Ele só vê a tool `regulamento(request)` e recebe a resposta final.
+- **`aurora/agent.py`, `CAPITULOS` e `ler_capitulo` (linhas 149–173):** o regulamento é dividido por capítulo. A tool grava **um** capítulo em `tool_context.state["temp:capitulo_regulamento"]` e devolve só `{"status": "Capítulo IV carregado..."}`.
+- **`aurora/agent.py`, `_instrucao_regulamento` e `regulamento_agent` (linhas 176–236):** o especialista recebe nas instruções o **índice** dos capítulos e, depois de `ler_capitulo`, o capítulo carregado (lido do state `temp:` por um `InstructionProvider`).
+- **`aurora/agent.py`, `root_agent` (linhas 238–251):** as instruções do principal não contêm o regulamento. Ele só vê a tool `regulamento(request)` e recebe a resposta final.
 
-**Por que não depende do modelo:** state com prefixo `temp:` é aplicado só à sessão em memória durante a invocação e é removido do `state_delta` do evento antes de gravar (`BaseSessionService._apply_temp_state` e `_trim_temp_delta_state` em `google/adk/sessions/base_session_service.py`). Por isso nenhum evento da sessão contém texto do regulamento, nem do capítulo certo. Entram só `ler_capitulo({"capitulo": "IV"})`, o status curto e a resposta final (por exemplo, "das 9h às 20h, conforme o Art. 22, II"). Mesmo que o especialista carregue o capítulo errado, esse texto não chega aos eventos.
+**Por que não depende do modelo:** state com prefixo `temp:` é aplicado só à sessão em memória durante a invocação e é removido do `state_delta` do evento antes de gravar (`BaseSessionService._apply_temp_state` e `_trim_temp_delta_state` em `google/adk/sessions/base_session_service.py`). Por isso o texto carregado do regulamento nunca é gravado em evento. Entram só `ler_capitulo({"capitulo": "IV"})`, o status curto e a resposta final do especialista, que traz apenas o que responde à pergunta (por exemplo, "das 9h às 20h, conforme o Art. 22, II"). Mesmo que o especialista carregue o capítulo errado, o texto desse capítulo não chega aos eventos. O único texto livre gravado é a resposta, e a instrução do especialista a restringe ao que foi perguntado.
 
 ### Garantia 5: dois moradores, uma reserva
 
@@ -90,7 +90,8 @@ Os nomes seguem a API atual da série 2, conferida no código instalado: `from g
   CREATE UNIQUE INDEX uma_reserva_ativa_por_area_data ON reservas (area, data) WHERE ativa = 1;
   ```
   O SQLite confere a exclusividade **no próprio INSERT**: um segundo INSERT ativo para a mesma área e data falha com `IntegrityError`, mesmo que as duas gravações tenham passado pela conferência prévia ao mesmo tempo.
-- **`aurora/db.py`, `criar_reserva` (linhas 95–114):** captura o `IntegrityError` do índice e devolve `None`, e `reservar_area` transforma isso numa resposta normal ("já está reservado(a)"). As duas aprovações respondem 200. O código `RSV-XXXXXXXX` é a `PRIMARY KEY` (linha 18) e reservas canceladas não são apagadas, então um código nunca se repete.
+- **`aurora/agent.py`, `_validar` (linhas 29–43), e `aurora/db.py`, `CHECK` da coluna `data` (linha 21):** antes de consultar ou gravar, a data é reescrita na forma canônica `AAAA-MM-DD`: `2030-W11-6` e `20300316` viram `2030-03-16`. O banco recusa qualquer outro formato. Como o índice compara texto, isso garante que o mesmo dia é sempre escrito do mesmo jeito e não pode ser reservado duas vezes.
+- **`aurora/db.py`, `criar_reserva` (linhas 93–112):** captura o `IntegrityError` do índice e devolve `None`, e `reservar_area` transforma isso numa resposta normal ("já está reservado(a)"). As duas aprovações respondem 200. O código `RSV-XXXXXXXX` é a `PRIMARY KEY` (linha 18) e reservas canceladas não são apagadas, então um código nunca se repete.
 - **`aurora/checagem.py`:** dispara 20 gravações simultâneas na mesma área e data, **sem** a conferência prévia, e verifica que só uma vence (`uv run python -m aurora.checagem`).
 
 **Por que não depende do modelo:** a conferência `data_livre` antes da gravação existe só para responder rápido. Quem garante a regra é o índice único do banco, no instante da gravação.
@@ -104,7 +105,6 @@ Os nomes seguem a API atual da série 2, conferida no código instalado: `from g
 | Variável | Uso |
 | --- | --- |
 | `GOOGLE_API_KEY` | Chave do Google AI Studio (obrigatória). |
-| `GOOGLE_GENAI_USE_VERTEXAI` | `FALSE` (usa o AI Studio, não a Vertex). |
 | `AURORA_MODEL` | Opcional. Modelo Gemini dos agentes; vazio = `gemini-3.1-flash-lite`. |
 
 ```bash

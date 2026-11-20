@@ -26,19 +26,21 @@ def _apartamento(tool_context: Context) -> str:
     return tool_context.state["apartamento"]
 
 
-def _validar(area: str, data: str) -> tuple[dict | None, str | None]:
-    """Normaliza a área (id ou nome) e valida a data AAAA-MM-DD."""
+def _validar(area: str, data: str) -> tuple[dict | None, str | None, str | None]:
+    """Devolve (área, data canônica AAAA-MM-DD, erro).
+
+    A data é sempre reescrita na forma canônica: `fromisoformat` também aceita "2030-W11-6"
+    e "20300316", e o índice único compara texto. Sem isso, o mesmo dia escrito de outro
+    jeito passaria como data livre.
+    """
     alvo = area.strip().lower()
     achada = next((a for a in db.AREAS.values() if alvo in (a["id"], a["nome"].lower())), None)
     if achada is None:
-        return None, f"Área inválida. Use um destes ids: {', '.join(db.AREAS)}."
+        return None, None, f"Área inválida. Use um destes ids: {', '.join(db.AREAS)}."
     try:
-        date.fromisoformat(data)
+        return achada, date.fromisoformat(data.strip()).isoformat(), None
     except ValueError:
-        return None, "Data inválida. Use o formato AAAA-MM-DD."
-    if len(data) != 10:
-        return None, "Data inválida. Use o formato AAAA-MM-DD."
-    return achada, None
+        return None, None, "Data inválida. Use o formato AAAA-MM-DD."
 
 
 # ---------- tools de reservas ----------
@@ -56,7 +58,7 @@ def consultar_disponibilidade(area: str, data: str) -> dict:
         area: id da área (salao-de-festas, churrasqueira ou quadra).
         data: data no formato AAAA-MM-DD.
     """
-    achada, erro = _validar(area, data)
+    achada, data, erro = _validar(area, data)
     if erro:
         return {"erro": erro}
     return {"area": achada["id"], "data": data, "livre": db.data_livre(achada["id"], data)}
@@ -70,7 +72,7 @@ def reservar_area(area: str, data: str, tool_context: Context) -> dict:
         area: id da área (salao-de-festas, churrasqueira ou quadra).
         data: data no formato AAAA-MM-DD.
     """
-    achada, erro = _validar(area, data)
+    achada, data, erro = _validar(area, data)
     if erro:
         return {"erro": erro}
     area_id, taxa = achada["id"], achada["taxa"]
@@ -124,7 +126,7 @@ def autorizar_visitante(nome: str, data: str, tool_context: Context) -> dict:
     nome = " ".join(nome.split())
     if not nome:
         return {"erro": "Informe o nome do visitante."}
-    _, erro = _validar("quadra", data)  # reaproveita só a validação de data
+    _, data, erro = _validar("quadra", data)  # reaproveita só a validação de data
     if erro:
         return {"erro": erro}
 

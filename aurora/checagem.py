@@ -34,4 +34,11 @@ dono = next(f"{i:03d}" for i in range(20) if db.reservas_do_apartamento(f"{i:03d
 assert db.cancelar_reserva(dono, vencedor[0]) and db.data_livre("churrasqueira", "2099-01-01")
 novo = db.criar_reserva("101", "churrasqueira", "2099-01-01")
 assert novo and novo != vencedor[0]
+# Mesmo dia escrito em outro formato não fura a exclusividade.
+assert db.criar_reserva("101", "salao-de-festas", "2030-W11-6") is None  # CHECK do banco recusa
+from .agent import _validar  # noqa: E402
+
+assert _validar("salao-de-festas", "2030-W11-6")[1] == "2030-03-16"
+assert _validar("salao-de-festas", "20300316")[1] == "2030-03-16"
+assert not db.data_livre("salao-de-festas", _validar("salao-de-festas", "2030-W11-6")[1])
 print("checagem ok")

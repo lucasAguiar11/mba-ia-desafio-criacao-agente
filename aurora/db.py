@@ -18,7 +18,7 @@ CREATE TABLE IF NOT EXISTS reservas (
   codigo TEXT PRIMARY KEY,           -- PK: código nunca se repete, nem de reserva cancelada
   apartamento TEXT NOT NULL,
   area TEXT NOT NULL,
-  data TEXT NOT NULL,
+  data TEXT NOT NULL CHECK (data GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'),  -- só AAAA-MM-DD
   ativa INTEGER NOT NULL DEFAULT 1   -- cancelar = ativa 0; a linha fica para o código não voltar
 );
 -- Garantia 5: no máximo uma reserva ATIVA por área e data, conferido pelo SQLite no INSERT.
@@ -28,7 +28,7 @@ CREATE TABLE IF NOT EXISTS visitantes (
   id INTEGER PRIMARY KEY,
   apartamento TEXT NOT NULL,
   nome TEXT NOT NULL,
-  data TEXT NOT NULL
+  data TEXT NOT NULL CHECK (data GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]')
 );
 """
 
@@ -54,9 +54,7 @@ def restaurar() -> None:
     reservas = json.loads((DADOS / "reservas.json").read_text())
     visitantes = json.loads((DADOS / "visitantes.json").read_text())
     with closing(conectar()) as con, con:
-        con.executescript(SCHEMA)
-        con.execute("DELETE FROM reservas")
-        con.execute("DELETE FROM visitantes")
+        con.executescript("DROP TABLE IF EXISTS reservas; DROP TABLE IF EXISTS visitantes;" + SCHEMA)
         con.executemany(
             "INSERT INTO reservas (codigo, apartamento, area, data) VALUES (:codigo, :apartamento, :area, :data)",
             reservas,
@@ -111,7 +109,7 @@ def criar_reserva(apartamento: str, area: str, data: str) -> str | None:
             except sqlite3.IntegrityError as erro:
                 if "reservas.codigo" in str(erro):
                     continue  # colisão de código (improvável): sorteia outro
-                return None  # índice único de área+data: outra reserva ativa venceu
+                return None  # índice único de área+data (outra reserva ativa venceu) ou data fora de AAAA-MM-DD
 
 
 def cancelar_reserva(apartamento: str, codigo: str) -> bool:
