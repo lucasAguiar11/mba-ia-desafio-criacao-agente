@@ -22,7 +22,7 @@ estado/        criado em tempo de execução: aurora.db (reservas/visitantes) e 
                          Runner (ADK) + SqliteSessionService
                                    │
                     assistente_aurora  (agente principal)
-          transfer_to_agent ┌──────┴───────┐ transfer_to_agent      AgentTool
+          transfer_to_agent ┌──────┴───────┐ transfer_to_agent   tool (mode=single_turn)
                             ▼              ▼                          ▼
                         reservas       visitantes                regulamento
              listar_minhas_reservas    listar_meus_visitantes    ler_capitulo
@@ -38,9 +38,11 @@ estado/        criado em tempo de execução: aurora.db (reservas/visitantes) e 
 | `assistente_aurora` (principal) | Recebe o morador e distribui o trabalho. Não tem tools de dados nem o regulamento nas instruções. | É o `root_agent` do `App`, chamado pelo `Runner`. | Ponto único de entrada; só roteia. |
 | `reservas` | Lista, consulta disponibilidade, reserva e cancela reservas do apartamento da sessão. | Sub-agente em modo *chat*, por `transfer_to_agent`. | As tools de reserva pedem confirmação (`request_confirmation`). Como sub-agente, a execução roda **na sessão persistida**, então o pedido de confirmação e a retomada ficam gravados nela, e o Runner devolve a resposta ao agente que pediu (`find_agent_to_run` → autor da chamada). Depois da transferência ele segue atendendo o morador sem uma chamada extra ao principal. |
 | `visitantes` | Lista e autoriza visitantes do apartamento da sessão. | Sub-agente em modo *chat*, por `transfer_to_agent`. | Mesmo motivo: `autorizar_visitante` sempre pede confirmação, e ela precisa sobreviver na sessão persistida. |
-| `regulamento` | Responde dúvidas lendo **um** capítulo de `dados/regulamento.md`. | `AgentTool` do agente principal. | O `AgentTool` roda o especialista num runner aninhado com sessão própria em memória. O capítulo lido fica nessa sessão descartável, e na sessão do morador entra só a resposta final. O texto do regulamento não acompanha as mensagens seguintes (Garantia 4). |
+| `regulamento` | Responde dúvidas lendo **um** capítulo de `dados/regulamento.md`. | Sub-agente com `mode="single_turn"`: o ADK o expõe ao principal como a tool `regulamento(request)` e o executa inline, num sub-branch da sessão. | Uma dúvida de regulamento é uma pergunta e uma resposta, sem diálogo, então `single_turn` basta e devolve o controle ao principal. É a forma que o código do ADK 2.15 recomenda no lugar de `AgentTool` (a docstring de `AgentTool` diz que o uso direto é desencorajado). O capítulo lido fica só em state `temp:`, então não vai para os eventos nem acompanha as mensagens seguintes (Garantia 4). |
 
 Todos os agentes usam `gemini-3.1-flash-lite` por padrão (configurável por `AURORA_MODEL`). É um modelo estável, rápido e suficiente para escolher tools simples. Foi o que rodou o fluxo inteiro do avaliador dentro da cota do plano gratuito; no teste, `gemini-2.5-flash` estourou o limite de 20 requisições/dia do free tier. As chamadas ao Gemini repetem com backoff em 429/5xx (`retry_options` em `aurora/agent.py`), então um pico de demanda não vira erro 500 na API.
+
+Os nomes seguem a API atual da série 2, conferida no código instalado: `from google.adk import Agent, Context` (`ToolContext` e `LlmAgent` são aliases), confirmação dinâmica com `Context.request_confirmation`, `Runner(app=App(...))` e `SqliteSessionService`, que é o serviço que o próprio ADK usa para URIs `sqlite://` e no armazenamento local do `adk web`.
 
 **Armazenamento:** SQLite (biblioteca padrão, sem serviço externo).
 - `estado/aurora.db`: tabelas `reservas` e `visitantes`. Cancelar marca `ativa = 0` e mantém a linha, para o código nunca ser reaproveitado.
@@ -53,13 +55,13 @@ Todos os agentes usam `gemini-3.1-flash-lite` por padrão (configurável por `AU
 - **`aurora/agent.py`, `reservar_area` (linhas 65–94):** se a área tem `taxa > 0` e a chamada ainda não traz `tool_context.tool_confirmation`, a tool chama `tool_context.request_confirmation(hint, payload={"area", "data", "taxa"})` e retorna **sem gravar**. Ela só grava quando o ADK a reexecuta com `tool_confirmation.confirmed == True`. Se for negada, retorna `nao_reservado`. Área com taxa 0 (quadra) grava direto, sem confirmação.
 - **`aurora/agent.py`, `autorizar_visitante` (linhas 116–141):** sempre pede confirmação, com `payload={"nome", "data"}`, e só chama `db.autorizar_visitante` depois de aprovada.
 - **`aurora/api.py`, `_pendentes` (linhas 59–75):** as pendências são as chamadas `adk_request_confirmation` gravadas na sessão que ainda não têm resposta. `acao` é o nome da tool original e `detalhes` é o `payload` validado pela tool.
-- **`aurora/api.py`, `responder_confirmacao` (linhas 104–110):** se o `id` não está em `_pendentes(sessao)`, a rota responde **409** e não chama o Runner. Isso cobre id inexistente, id de outra sessão e id já respondido, porque a resposta gravada tira o id da lista. Se o id for válido, a rota envia um `FunctionResponse(name="adk_request_confirmation", response={"confirmed": ...})` ao Runner, que retoma a tool no agente que pediu.
+- **`aurora/api.py`, `responder_confirmacao` (linhas 108–114):** se o `id` não está em `_pendentes(sessao)`, a rota responde **409** e não chama o Runner. Isso cobre id inexistente, id de outra sessão e id já respondido, porque a resposta gravada tira o id da lista. Se o id for válido, a rota envia um `FunctionResponse(name="adk_request_confirmation", response={"confirmed": ...})` ao Runner, que retoma a tool no agente que pediu.
 
 **Por que não depende do modelo:** a rota de mensagens só aceita texto (`types.Part(text=...)`). Escrever "já confirmei" não produz um `FunctionResponse`. O `tool_confirmation` só existe quando a rota de confirmações envia a resposta, e o ADK ainda confere se ela corresponde à chamada original gravada na sessão (`_resolve_confirmation_targets`).
 
 ### Garantia 2: cada sessão pertence a um apartamento
 
-- **`aurora/api.py`, `criar_sessao` (linhas 87–95):** o apartamento é validado contra `dados/apartamentos.json` e gravado **uma única vez** no state da sessão (`state={"apartamento": ...}`). Nenhuma rota ou tool altera esse valor depois.
+- **`aurora/api.py`, `criar_sessao` (linhas 91–99):** o apartamento é validado contra `dados/apartamentos.json` e gravado **uma única vez** no state da sessão (`state={"apartamento": ...}`). Nenhuma rota ou tool altera esse valor depois.
 - **`aurora/agent.py`, `_apartamento` (linha 25):** todas as tools que leem ou gravam dados do morador obtêm o apartamento de `tool_context.state["apartamento"]`. **Nenhuma tool recebe apartamento como parâmetro**, então o modelo não tem como escolher outro.
 - **`aurora/db.py`, `cancelar_reserva` (linhas 117–124):** o `UPDATE` filtra por `codigo = ? AND apartamento = ?`. Um código de outro apartamento não cancela nada, e a resposta não diz se ele existe.
 - **`aurora/db.py`, `data_livre` (linhas 87–92) e `consultar_disponibilidade` em `agent.py`:** devolvem só `livre: true/false`, nunca o código ou o apartamento da reserva existente. `reservar_area` também responde apenas "já está reservado(a)".
@@ -75,11 +77,11 @@ Todos os agentes usam `gemini-3.1-flash-lite` por padrão (configurável por `AU
 
 ### Garantia 4: o regulamento é consultado, não carregado
 
-- **`aurora/agent.py`, `CAPITULOS` e `ler_capitulo` (linhas 146–163):** o regulamento é dividido por capítulo, e a tool devolve **um** capítulo por vez.
-- **`aurora/agent.py`, `regulamento_agent` (linhas 207–218):** só o especialista recebe o **índice** dos capítulos (títulos) nas instruções. O texto completo não está em nenhuma instrução.
-- **`aurora/agent.py`, `root_agent` (linhas 220–234):** as instruções do principal não contêm o regulamento. Ele aciona o especialista por `AgentTool(regulamento_agent)`.
+- **`aurora/agent.py`, `CAPITULOS` e `ler_capitulo` (linhas 147–171):** o regulamento é dividido por capítulo. A tool grava **um** capítulo em `tool_context.state["temp:capitulo_regulamento"]` e devolve só `{"status": "Capítulo IV carregado..."}`.
+- **`aurora/agent.py`, `_instrucao_regulamento` e `regulamento_agent` (linhas 174–234):** o especialista recebe nas instruções o **índice** dos capítulos e, depois de `ler_capitulo`, o capítulo carregado (lido do state `temp:` por um `InstructionProvider`).
+- **`aurora/agent.py`, `root_agent` (linhas 236–249):** as instruções do principal não contêm o regulamento. Ele só vê a tool `regulamento(request)` e recebe a resposta final.
 
-**Por que não depende do modelo:** o `AgentTool` executa o especialista num runner aninhado com `InMemorySessionService` próprio. A chamada a `ler_capitulo` e o texto do capítulo ficam nessa sessão descartável, e na sessão do morador entram só a pergunta e a resposta final (por exemplo, "até as 20h, conforme o Art. 22, II"). Mesmo que o especialista leia o capítulo errado, esse texto não vai para os eventos.
+**Por que não depende do modelo:** state com prefixo `temp:` é aplicado só à sessão em memória durante a invocação e é removido do `state_delta` do evento antes de gravar (`BaseSessionService._apply_temp_state` e `_trim_temp_delta_state` em `google/adk/sessions/base_session_service.py`). Por isso nenhum evento da sessão contém texto do regulamento, nem do capítulo certo. Entram só `ler_capitulo({"capitulo": "IV"})`, o status curto e a resposta final (por exemplo, "das 9h às 20h, conforme o Art. 22, II"). Mesmo que o especialista carregue o capítulo errado, esse texto não chega aos eventos.
 
 ### Garantia 5: dois moradores, uma reserva
 

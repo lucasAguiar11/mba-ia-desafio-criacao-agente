@@ -78,6 +78,10 @@ def _pendentes(sessao) -> list[dict]:
 async def _executar(session_id: str, conteudo: types.Content) -> dict:
     textos = []
     async for evento in runner.run_async(user_id=USER_ID, session_id=session_id, new_message=conteudo):
+        # Branch "<agente>@<id>" = sub-agente single_turn rodando como tool; o texto dele volta
+        # ao principal como resultado da tool, então só a resposta da conversa entra aqui.
+        if "@" in (evento.branch or ""):
+            continue
         if evento.author != "user" and evento.content and evento.content.parts and not evento.partial:
             textos += [p.text for p in evento.content.parts if p.text and not p.thought]
     sessao = await _sessao(session_id)

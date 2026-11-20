@@ -8,9 +8,9 @@ import os
 import re
 from datetime import date
 
-from google.adk.agents import LlmAgent
+from google.adk import Agent, Context
+from google.adk.agents.readonly_context import ReadonlyContext
 from google.adk.models import Gemini
-from google.adk.tools import AgentTool, ToolContext
 from google.genai import types
 
 from . import db
@@ -22,7 +22,7 @@ MODELO = Gemini(
 )
 
 
-def _apartamento(tool_context: ToolContext) -> str:
+def _apartamento(tool_context: Context) -> str:
     return tool_context.state["apartamento"]
 
 
@@ -44,7 +44,7 @@ def _validar(area: str, data: str) -> tuple[dict | None, str | None]:
 # ---------- tools de reservas ----------
 
 
-def listar_minhas_reservas(tool_context: ToolContext) -> dict:
+def listar_minhas_reservas(tool_context: Context) -> dict:
     """Lista as reservas ativas do apartamento do morador desta conversa."""
     return {"reservas": db.reservas_do_apartamento(_apartamento(tool_context))}
 
@@ -62,7 +62,7 @@ def consultar_disponibilidade(area: str, data: str) -> dict:
     return {"area": achada["id"], "data": data, "livre": db.data_livre(achada["id"], data)}
 
 
-def reservar_area(area: str, data: str, tool_context: ToolContext) -> dict:
+def reservar_area(area: str, data: str, tool_context: Context) -> dict:
     """Reserva uma área comum para o apartamento do morador. Áreas com taxa só são
     reservadas depois que o morador aprova a cobrança pelo sistema de confirmação.
 
@@ -94,7 +94,7 @@ def reservar_area(area: str, data: str, tool_context: ToolContext) -> dict:
     return {"status": "reservado", "codigo": codigo, "area": area_id, "data": data, "taxa": taxa}
 
 
-def cancelar_reserva(codigo: str, tool_context: ToolContext) -> dict:
+def cancelar_reserva(codigo: str, tool_context: Context) -> dict:
     """Cancela uma reserva do apartamento do morador pelo código (ex.: RSV-1234).
 
     Args:
@@ -108,12 +108,12 @@ def cancelar_reserva(codigo: str, tool_context: ToolContext) -> dict:
 # ---------- tools de visitantes ----------
 
 
-def listar_meus_visitantes(tool_context: ToolContext) -> dict:
+def listar_meus_visitantes(tool_context: Context) -> dict:
     """Lista os visitantes autorizados do apartamento do morador desta conversa."""
     return {"visitantes": db.visitantes_do_apartamento(_apartamento(tool_context))}
 
 
-def autorizar_visitante(nome: str, data: str, tool_context: ToolContext) -> dict:
+def autorizar_visitante(nome: str, data: str, tool_context: Context) -> dict:
     """Autoriza a entrada de um visitante no prédio. Só é gravado depois que o morador
     aprova pelo sistema de confirmação.
 
@@ -153,14 +153,33 @@ _INDICE = "\n".join(
 )
 
 
-def ler_capitulo(capitulo: str) -> dict:
-    """Devolve o texto de um único capítulo do regulamento interno.
+CAPITULO_TEMP = "temp:capitulo_regulamento"
+
+
+def ler_capitulo(capitulo: str, tool_context: Context) -> dict:
+    """Carrega um único capítulo do regulamento interno para você ler antes de responder.
 
     Args:
         capitulo: numeral romano do capítulo (ex.: IV).
     """
     texto = CAPITULOS.get(capitulo.strip().upper())
-    return {"texto": texto} if texto else {"erro": f"Capítulo inexistente. Opções: {', '.join(CAPITULOS)}."}
+    if not texto:
+        return {"erro": f"Capítulo inexistente. Opções: {', '.join(CAPITULOS)}."}
+    # Garantia 4: o texto vai para state `temp:`, que o ADK mantém só em memória durante a
+    # invocação e remove do evento antes de persistir. A resposta da tool (evento) fica curta.
+    tool_context.state[CAPITULO_TEMP] = texto
+    return {"status": f"Capítulo {capitulo.strip().upper()} carregado nas suas instruções."}
+
+
+def _instrucao_regulamento(ctx: ReadonlyContext) -> str:
+    capitulo = ctx.state.get(CAPITULO_TEMP)
+    return (
+        "Você responde dúvidas sobre o regulamento interno do Residencial Aurora. "
+        "Escolha o capítulo pelo índice abaixo, carregue-o com ler_capitulo e responda só o que foi perguntado, "
+        "citando o artigo, sem copiar trechos que não tratam da pergunta.\n"
+        f"Índice:\n{_INDICE}"
+        + (f"\n\nCapítulo carregado:\n{capitulo}" if capitulo else "")
+    )
 
 
 # ---------- agentes ----------
@@ -174,7 +193,7 @@ _REGRA_APTO = (
 )
 _AREAS_TXT = ", ".join(f"{a['id']} ({a['nome']}, taxa R$ {a['taxa']:.2f})" for a in db.AREAS.values())
 
-reservas_agent = LlmAgent(
+reservas_agent = Agent(
     name="reservas",
     model=MODELO,
     description="Reserva, cancela e lista reservas das áreas comuns e consulta disponibilidade.",
@@ -190,7 +209,7 @@ reservas_agent = LlmAgent(
     tools=[listar_minhas_reservas, consultar_disponibilidade, reservar_area, cancelar_reserva],
 )
 
-visitantes_agent = LlmAgent(
+visitantes_agent = Agent(
     name="visitantes",
     model=MODELO,
     description="Autoriza a entrada de visitantes e lista os visitantes autorizados do morador.",
@@ -204,20 +223,17 @@ visitantes_agent = LlmAgent(
     tools=[listar_meus_visitantes, autorizar_visitante],
 )
 
-regulamento_agent = LlmAgent(
+regulamento_agent = Agent(
     name="regulamento",
     model=MODELO,
-    description="Responde dúvidas sobre o regulamento interno do condomínio.",
-    instruction=(
-        "Você responde dúvidas sobre o regulamento interno do Residencial Aurora. "
-        "Escolha o capítulo pelo índice abaixo, leia-o com ler_capitulo e responda só o que foi perguntado, "
-        "citando o artigo, sem copiar trechos que não tratam da pergunta.\n"
-        f"Índice:\n{_INDICE}"
-    ),
+    # single_turn: o principal o chama como tool (forma recomendada no ADK 2.x no lugar de AgentTool).
+    mode="single_turn",
+    description="Responde dúvidas sobre o regulamento interno do condomínio. Envie a pergunta do morador.",
+    instruction=_instrucao_regulamento,
     tools=[ler_capitulo],
 )
 
-root_agent = LlmAgent(
+root_agent = Agent(
     name="assistente_aurora",
     model=MODELO,
     description="Assistente virtual dos moradores do Residencial Aurora.",
@@ -229,6 +245,5 @@ root_agent = LlmAgent(
         "e repasse a resposta. "
         f"{_REGRA_APTO}"
     ),
-    sub_agents=[reservas_agent, visitantes_agent],
-    tools=[AgentTool(regulamento_agent)],
+    sub_agents=[reservas_agent, visitantes_agent, regulamento_agent],
 )
